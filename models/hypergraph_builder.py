@@ -1,30 +1,28 @@
 import torch
 import numpy as np
-from sklearn.metrics.pairwise import cosine_similarity
+import torch.nn.functional as F
 
-def build_hypergraph(features, threshold=0.7):
-    features = features.detach().cpu().numpy() if isinstance(features, torch.Tensor) else features
+def build_hypergraph(features, k=10):
+
+    if isinstance(features, np.ndarray):
+        features = torch.from_numpy(features)
+    
+    features_norm = F.normalize(features, p=2, dim=1)
+    sim_matrix = torch.mm(features_norm, features_norm.t()))
     N = features.shape[0]
-
-    # Compute cosine similarity matrix
-    sim_matrix = cosine_similarity(features)
-
-    # Build incidence matrix H
-    H = np.zeros((N, N))
-    for i in range(N):
-        for j in range(N):
-            if i != j and sim_matrix[i, j] >= threshold:
-                H[i, j] = 1  # Connect node i to j if similarity is above threshold
-
-    # Node and edge degrees
-    node_degree = np.sum(H, axis=1)
-    edge_degree = np.sum(H, axis=0)
-
-    # Inverse square roots for normalization
-    inv_sqrt_D_node = np.diag(1.0 / np.sqrt(node_degree + 1e-8))
-    inv_D_edge = np.diag(1.0 / (edge_degree + 1e-8))  # Use inverse, not inverse square root
-
-    # Compute hypergraph Laplacian correctly
-    L = np.eye(N) - inv_sqrt_D_node @ H @ inv_D_edge @ H.T @ inv_sqrt_D_node
-
-    return torch.tensor(L, dtype=torch.float32), torch.tensor(H, dtype=torch.float32)
+    _, indices = torch.topk(sim_matrix, k=k, dim=1)  
+    H = torch.zeros(N, N, device=features.device)
+    
+    row_indices = torch.arange(N, device=features.device).unsqueeze(1).expand(-1, k)
+    H[row_indices, indices] = 1.0
+    
+    D_v = torch.sum(H, dim=1) 
+    D_e = torch.sum(H, dim=0) 
+    
+    inv_sqrt_Dv = torch.diag(torch.pow(D_v + 1e-8, -0.5))
+    inv_De = torch.diag(torch.pow(D_e + 1e-8, -1.0)) 
+    
+    H_t = H.t()
+    L = torch.eye(N, device=features.device) - inv_sqrt_Dv @ H @ inv_De @ H_t @ inv_sqrt_Dv
+        
+    return L.float(), H.float()
